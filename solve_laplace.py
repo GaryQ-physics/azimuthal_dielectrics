@@ -160,7 +160,7 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
     eta_op = diamatmul( ((1.+rx**2)/(2.*rx))**2 , secondir_matrix(N, bc='neumann')/deta**2 )
 
     scaledlap = ssp.kron(ssp.identity(N,format='csr'), eta_op) + ssp.kron(u_op, ssp.identity(N,format='csr'))
-    #return scaledlap
+
     if debug:
         print('N, sig = %d, %f \n'%(N,sig))
         print('phi0 = %f'%(phi0))
@@ -168,7 +168,6 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
         print('r_max = %f'%(r_max))
         print('u_min = %f'%(u_min))
         print('u_max = %f\n'%(u_max))
-
 
     innerbc = -( phi0*(r_min**2)/du**2 )*np.ones(N)
     e0 = np.zeros(N)
@@ -196,7 +195,6 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
     theta_ax = eta2theta(eta_ax)
 
     return [r_ax, theta_ax, result]
-
 
 
 def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=False):
@@ -246,14 +244,14 @@ def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=F
         if i < i_crit:
             continue
         n = invsigma(i, (N-1)//2, N=N, M=N)
-        n_oneless = invsigma(i, (N-1)//2-1, N=N, M=N)
+        n_oneless = invsigma(i, (N-1)//2-1, N=N, M=N) # here more/less refers to adjusting j
         n_onemore = invsigma(i, (N-1)//2+1, N=N, M=N)
 
         if debug:
             print('n=%d'%(n))
             #print('before: scaledlap[n, :] = ' + str(scaledlap[n, :].tolist()))
 
-        #################### scaledlap[n, :] = 0. ######################
+        #################### scaledlap[n, :] = 0. ######################  # see ./stackoverflow.py
         row_idx = n
 
         row_indices = scaledlap.indices[scaledlap.indptr[n]:scaledlap.indptr[n+1]]
