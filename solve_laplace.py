@@ -1,8 +1,12 @@
 import os
 import sys
 import numpy as np
-import discrete_differentials as dd
+from discrete_differentials import secondir_matrix
 #import kron_demo
+from scipy.special import legendre
+from scipy.optimize import curve_fit
+import scipy.sparse as ssp
+import scipy.sparse.linalg
 
 import resource
 soft, hard = 10*2**30, 10*2**30
@@ -10,7 +14,18 @@ resource.setrlimit(resource.RLIMIT_AS,(soft, hard))
 
 base = '/home/gary/azimuthal_dielectrics/'
 
+
+def Pol(x, l):
+    coeffs = legendre(l)
+    ret = np.zeros_like(x)
+    for n in range(l+1):
+        ret = coeffs[l-n]*x**n
+    return ret
+
+
 def matrix_tostring(M, tag):
+    if not isinstance(M, np.ndarray): M = M.toarray()
+
     st = ''
     for head in tag:
         head = str(head)
@@ -28,6 +43,9 @@ def matrix_tostring(M, tag):
     return st
 
 def mv_tostring(M, v, tag):
+    if not isinstance(M, np.ndarray): M = M.toarray()
+    if not isinstance(v, np.ndarray): v = v.toarray()
+
     st = ''
     for head in tag:
         head = str(head)
@@ -49,6 +67,8 @@ def mv_tostring(M, v, tag):
     return st
 
 def vect_tostring(v, tag):
+    if not isinstance(v, np.ndarray): v = v.toarray()
+
     st = ''
     for i in range(v.size):
         st = st + '%8.3f'%(v[i]) + '  |  ' + str(tag[i]) + '\n'
@@ -103,13 +123,28 @@ def eta2theta(eta):
         return theta.reshape(shape)
 
     x = np.exp(2.*eta)
-    c = (1.-x)/(1.+x)
+    c = (1.-x)/(1.+x)  # or c = -np.tanh(eta)
     theta = np.arccos(c)
     #theta = np.arccos( (-x + np.sqrt(2.*x**2 - 2.*x + 1))/(1-x) ) # doesnt work? arithmetic mistake?
     return theta
 
-def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
 
+def diamatmul(v, M):
+    #sparse equivalent to  np.diag(v) @ M
+
+    #https://stackoverflow.com/questions/12237954/multiplying-elements-in-a-sparse-array-with-rows-in-matrix
+    # just to make the point that this works only with CSR:
+    if not isinstance(M, scipy.sparse.csr_matrix):
+        raise ValueError('Matrix must be CSR (scipy.sparse.csr_matrix)')
+
+    Z = M.copy()
+    # simply repeat each value in Y by the number of nnz elements in each row: 
+    Z.data *= v.repeat(np.diff(Z.indptr))
+
+    return Z
+
+
+def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
     u_min = r2u(r_min)
     u_max = r2u(r_max)
 
@@ -119,11 +154,13 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
     u_ax = np.linspace(u_min + du, u_max - du, N)
     eta_ax = np.linspace(-sig + deta, sig - deta, N)
 
-    u_op = np.diag(u_ax**2) @ dd.secondir_matrix(N, bc='dirichlet')/du**2
+    u_op = diamatmul( u_ax**2 , secondir_matrix(N, bc='dirichlet')/du**2 )
 
     rx = np.exp(eta_ax)
-    eta_op = np.diag( ((1.+rx**2)/(2.*rx))**2) @ dd.secondir_matrix(N, bc='neumann')/deta**2
+    eta_op = diamatmul( ((1.+rx**2)/(2.*rx))**2 , secondir_matrix(N, bc='neumann')/deta**2 )
 
+    scaledlap = ssp.kron(ssp.identity(N,format='csr'), eta_op) + ssp.kron(u_op, ssp.identity(N,format='csr'))
+    #return scaledlap
     if debug:
         print('N, sig = %d, %f \n'%(N,sig))
         print('phi0 = %f'%(phi0))
@@ -132,7 +169,6 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
         print('u_min = %f'%(u_min))
         print('u_max = %f\n'%(u_max))
 
-    scaledlap = np.kron(np.identity(N), eta_op) + np.kron(u_op, np.identity(N))
 
     innerbc = -( phi0*(r_min**2)/du**2 )*np.ones(N)
     e0 = np.zeros(N)
@@ -147,10 +183,9 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
     if debug: 
         #print(inhomo)
         #print(scaledlap)
-        print(mv_tostring(scaledlap, inhomo, [sigma(m, N=N, M=N) for m in range(N**2)]))
+        print(mv_tostring(scaledlap.toarray(), inhomo, [sigma(m, N=N, M=N) for m in range(N**2)]))
 
-
-    result = np.linalg.solve(scaledlap, inhomo)
+    result = scipy.sparse.linalg.spsolve(scaledlap, inhomo)
     if debug:
         print('\n')
         print(vect_tostring(result, [sigma(m, N=N, M=N) for m in range(N**2)]))
@@ -161,6 +196,7 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
     theta_ax = eta2theta(eta_ax)
 
     return [r_ax, theta_ax, result]
+
 
 
 def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=False):
@@ -175,12 +211,15 @@ def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=F
     u_ax = np.linspace(u_min + du, u_max - du, N)
     eta_ax = np.linspace(-sig + deta, sig - deta, N)
 
-    u_op = np.diag(u_ax**2) @ dd.secondir_matrix(N, bc='dirichlet')/du**2
+    u_op = diamatmul( u_ax**2 , secondir_matrix(N, bc='dirichlet')/du**2 )
 
     rx = np.exp(eta_ax)
-    eta_op = np.diag( ((1.+rx**2)/(2.*rx))**2) @ dd.secondir_matrix(N, bc='neumann')/deta**2
+    eta_op = diamatmul( ((1.+rx**2)/(2.*rx))**2 , secondir_matrix(N, bc='neumann')/deta**2 )
 
-    scaledlap = np.kron(np.identity(N), eta_op) + np.kron(u_op, np.identity(N))
+    scaledlap = ssp.kron(ssp.identity(N,format='csr'), eta_op) + ssp.kron(u_op, ssp.identity(N,format='csr'))
+    # kron output bsr_matrix, but cannot assign [n,m] values in that form
+    # change back to csr_matrix
+    scaledlap = ssp.csr_matrix(scaledlap)
 
     if debug:
         print('N, sig = %d, %f \n\n'%(N,sig))
@@ -195,15 +234,11 @@ def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=F
         print('du = %f'%(du))
         print('deta = %f\n'%(deta))
 
-        #print(scaledlap)
-
     u_crit = r2u(r_crit)
     i_crit = int(round((u_crit-u_min)/du)) - 1
 
-    #if debug:
-    #    for m in range(N**2):
-    #        print('sigma(%d) = '%(m) + str(sigma(m, N=N, M=N)))
-
+    #n0 = sl.invsigma(0, (N-1)//2, N=N, M=N)
+    #ns = n0 + np.arange(0,N**2,N)
     for i in range(N):
         if debug:
             print('i=%d'%(i))
@@ -216,17 +251,32 @@ def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=F
 
         if debug:
             print('n=%d'%(n))
-            print('before: scaledlap[n, :] = ' + str(scaledlap[n, :].tolist()))
+            #print('before: scaledlap[n, :] = ' + str(scaledlap[n, :].tolist()))
 
-        scaledlap[n, :] = 0.
-        scaledlap[n, n_oneless] = epsilonU/deta
-        scaledlap[n, n_onemore] = epsilonL/deta # * note convention higher j pushes eta into the L region
+        #################### scaledlap[n, :] = 0. ######################
+        row_idx = n
+
+        row_indices = scaledlap.indices[scaledlap.indptr[n]:scaledlap.indptr[n+1]]
+        new_row_data = np.zeros_like(row_indices)
+
+        N_elements_new_row = len(new_row_data)
+        assert(N_elements_new_row == len(row_indices))
+
+        idx_start_row = scaledlap.indptr[row_idx]
+        idx_end_row = scaledlap.indptr[row_idx + 1]
+
+        scaledlap.data = np.r_[scaledlap.data[:idx_start_row], new_row_data, scaledlap.data[idx_end_row:]]
+        scaledlap.indices = np.r_[scaledlap.indices[:idx_start_row], row_indices, scaledlap.indices[idx_end_row:]]
+        scaledlap.indptr = np.r_[scaledlap.indptr[:row_idx + 1], scaledlap.indptr[(row_idx + 1):]]
+        ###########################################################
+
+        scaledlap[n, n_oneless] = epsilonU/deta # will automatically print SparseEfficiencyWarning if this isn't already ocupied value
+        scaledlap[n, n_onemore] = epsilonL/deta # * note in convention higher j pushes eta into the L region
         scaledlap[n, n] = -(epsilonL+epsilonU)/deta
         if debug:
             print('n_oneless=%d'%(n_oneless))
             print('n_onemore=%d'%(n_onemore))
-            print('after: scaledlap[n, :] = ' + str(scaledlap[n, :].tolist()))
-
+            #print('after: scaledlap[n, :] = ' + str(scaledlap[n, :].tolist()))
 
     if i_crit > 0: # != -1 ?
         for j in range(N):
@@ -236,10 +286,25 @@ def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=F
             n_oneless = invsigma(i_crit-1, j, N=N, M=N)
             n_onemore = invsigma(i_crit+1, j, N=N, M=N) # here more/less refers to adjusting i (NOT j)
 
-            scaledlap[n, :] = 0.
+            #################### scaledlap[n, :] = 0. ######################
+            row_idx = n
+
+            row_indices = scaledlap.indices[scaledlap.indptr[n]:scaledlap.indptr[n+1]]
+            new_row_data = np.zeros_like(row_indices)
+
+            N_elements_new_row = len(new_row_data)
+            assert(N_elements_new_row == len(row_indices))
+
+            idx_start_row = scaledlap.indptr[row_idx]
+            idx_end_row = scaledlap.indptr[row_idx + 1]
+
+            scaledlap.data = np.r_[scaledlap.data[:idx_start_row], new_row_data, scaledlap.data[idx_end_row:]]
+            scaledlap.indices = np.r_[scaledlap.indices[:idx_start_row], row_indices, scaledlap.indices[idx_end_row:]]
+            scaledlap.indptr = np.r_[scaledlap.indptr[:row_idx + 1], scaledlap.indptr[(row_idx + 1):]]
+            ###########################################################
 
             if j > (N-1)//2: # higher j in the L region by *
-                scaledlap[n, n_oneless] = 1./deta
+                scaledlap[n, n_oneless] = 1./deta # will automatically print SparseEfficiencyWarning if this isn't already ocupied value
                 scaledlap[n, n_onemore] = epsilonL/deta
                 scaledlap[n, n] = -(epsilonL+1.)/deta
 
@@ -267,7 +332,7 @@ def solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., debug=F
     if debug:
         print(mv_tostring(scaledlap, inhomo, [sigma(m, N=N, M=N) for m in range(N**2)]))
 
-    result = np.linalg.solve(scaledlap, inhomo)
+    result = scipy.sparse.linalg.spsolve(scaledlap, inhomo)
     if debug:
         print('\n')
         print(vect_tostring(result, [sigma(m, N=N, M=N) for m in range(N**2)]))
@@ -380,6 +445,7 @@ def export_vtk(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., fn
 
 def export_pkl(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., fname=None):
     r_ax, theta_ax, phi = solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=N, sig=sig)
+    print('solved')
 
     dic = { 'r_ax' : r_ax,
             'theta_ax' : theta_ax,
@@ -409,10 +475,9 @@ def pkl_to_vtk(pkl):
     phi = phi.flatten()
     x = r*np.cos(theta)
     y = r*np.sin(theta)
-
     sys.path.append('/home/gary/magnetovis/pkg/magnetovis/')
     from vtk_export import vtk_export
-    vtk_export(pkl + '.vtk', np.column_stack([x,y,phi]),
+    vtk_export(pkl + '.vtk', np.column_stack([r,theta,phi]),
                     dataset = 'STRUCTURED_GRID',
                     connectivity = (N,N,1),
                     point_data = phi,
@@ -462,8 +527,16 @@ def main():
     test()
     #colorplot(1., 20., 2., 3., 2., 4., N=101, sig=9.)
     #plot3d(1., 20., 2., 3., 2., 4., N=101, sig=9.)
-    #export_pkl(1., 20., 2., 3., 2., 4., N=101, sig=9.)
+    #export_pkl(1., 20., 2., 3., 2., 4., N=1001, sig=9.)
     #pkl_to_vtk(base + 'CT_lap.pkl')
+    #print('main')
+    #M = ssp.csr_matrix([[0,1.5,0],[0,0,1.5],[0,0,0]])
+    #print(M.toarray())
+    #print(type(M[0,:]))
+    #print(M[0,:].indices)
+    #M[0,0]=3.4
+    #print(M.toarray())
+
 
 if __name__ == '__main__':
     main()

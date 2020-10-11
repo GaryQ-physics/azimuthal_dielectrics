@@ -1,4 +1,6 @@
 import numpy as np
+import scipy.sparse
+import scipy.sparse.linalg
 
 
 def forwarddir_matrix(N,  bc='neumann'):
@@ -88,36 +90,22 @@ def symdir_matrix(N,  bc='neumann'):
 
     return diff
 
-def secondir_matrix(N, bc='neumann'):
-    diff = np.zeros((N, N))
-    for n in range(N):
-        if n==0:
+def secondir_matrix(N, bc='neumann', form='csr'):
 
-            if bc=='dirichlet':
-                diff[0, 0] = -2.
-                diff[0, 1] = 1.
-                #diff v [0] =  +1*0 -2*v[0] + 1*v[1]("0==v[-1]") = -2*v[0] + 1*v[1]
-            elif bc=='neumann':
-                diff[0, 0] = -1.
-                diff[0, 1] = 1.
-                #diff v [0] = + 1*v[0] -2*v[0] + 1*v[1]  ("v[0]==v[-1]") = -2*v[0] + 1*v[1]
+    diag = -2*np.ones(N)
+    if bc=='neumann':
+        diag[0]=-1.
+        diag[-1]=-1.
+    elif bc=='dirichlet':
+        pass
+    else:
+        raise ValueError('requires neumann or dirichlet boundary conditions')
+    ones = np.ones(N-1)
 
-        elif n==N-1:
+    d = [ones, diag, ones]
+    K = [-1, 0, 1]
+    diff = scipy.sparse.diags(d, K, format=form)
 
-            if bc=='dirichlet':
-                diff[N-1, N-2] = 1.
-                diff[N-1, N-1] = -2.
-                #diff v [N-1] =  +1*v[N-2] -2*v[N-1] + 1*0("0==v[N]")
-            elif bc=='neumann':
-                diff[N-1, N-2] = 1.
-                diff[N-1, N-1] = -1.
-                #diff v [N-1] = + 1*v[N-2] -2*v[N-1] + 1*v[N-1]  ("v[N-1]==v[N]") = 1*v[N-2] + -1*v[N-1]
-
-        else:
-            diff[n, n-1] = 1.
-            diff[n, n] = -2.
-            diff[n, n+1] = 1.
-            #diff v [n] = + 1*v[n-1] -2*v[n] + 1*v[n+1]
     return diff
 
 
