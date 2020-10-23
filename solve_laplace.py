@@ -1,8 +1,10 @@
+# tested for python2.7.18 and python3.7.4 
+# vtk functionality doesn't work for python3
+
 import os
 import sys
 import numpy as np
 from discrete_differentials import secondir_matrix
-#import kron_demo
 from scipy.special import legendre
 from scipy.optimize import curve_fit
 import scipy.sparse as ssp
@@ -130,7 +132,7 @@ def eta2theta(eta):
 
 
 def diamatmul(v, M):
-    #sparse equivalent to  np.diag(v) @ M
+    #sparse equivalent to  np.diag(v) @ M     ( @ is np.matmul(,) in python3 )
 
     #https://stackoverflow.com/questions/12237954/multiplying-elements-in-a-sparse-array-with-rows-in-matrix
     # just to make the point that this works only with CSR:
@@ -173,11 +175,6 @@ def solve_noDielectric(r_min, r_max, phi0, N=100, sig=9., debug=False):
     e0 = np.zeros(N)
     e0[0] = 1. 
     inhomo = np.kron(e0, innerbc)
-
-    #inhomo = np.zeros(N**2)
-    #for j in range(N):
-    #    #inhomo[kron_demo.fordims(N,N).invsigma(0,j)] = innerbc[j]
-    #    inhomo[N*0 + j] = innerbc[j]
 
     if debug: 
         #print(inhomo)
@@ -420,22 +417,28 @@ def plot3d(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9.):
 
     plt.show()
 
-def export_vtk(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., fname=None):
+def export_vtk(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., fname=None, angle_axis=True):
     r_ax, theta_ax, phi = solve(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=N, sig=sig)
+    print('solved')
 
     r = np.kron(r_ax, np.ones(N))
     theta = np.kron(np.ones(N), theta_ax)
     phi = phi.flatten()
 
-    x = r*np.cos(theta)
-    y = r*np.sin(theta)
+    if angle_axis:
+        points = np.column_stack([r,theta,phi])
+    else:
+        x = r*np.cos(theta)
+        y = r*np.sin(theta)
+        points = np.column_stack([x,y,phi])
 
     if fname is None:
-        fname = base + 'solution_rmin_%f_rmax_%f_rcrit_%f_phi0_%f_epU_%f_epL_%f.vtk'%(r_min, r_max, r_crit, phi0, epsilonU, epsilonL)
+        fname = base + 'solution_rmin_%f_rmax_%f_rcrit_%f_phi0_%f_epU_%f_epL_%f_aa_%s.vtk'%(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, str(angle_axis))
 
     sys.path.append('/home/gary/magnetovis/pkg/magnetovis/')
     from vtk_export import vtk_export
-    vtk_export(base + 'CT_lap.vtk', np.column_stack([r,theta,phi]),
+
+    vtk_export(fname, points,
                     dataset = 'STRUCTURED_GRID',
                     connectivity = (N,N,1),
                     point_data = phi,
@@ -460,7 +463,7 @@ def export_pkl(r_min, r_max, r_crit, phi0, epsilonU, epsilonL, N=101, sig=9., fn
         pickle.dump(dic, handle, protocol=2)
 
 
-def pkl_to_vtk(pkl):
+def pkl_to_vtk(pkl, angle_axis=True):
     import pickle
     with open(pkl, 'rb') as handle:
         dic = pickle.load(handle)
@@ -468,14 +471,22 @@ def pkl_to_vtk(pkl):
     theta_ax = dic['theta_ax']
     phi = dic['phi']
     N = dic['N']
+
     r = np.kron(r_ax, np.ones(N))
     theta = np.kron(np.ones(N), theta_ax)
     phi = phi.flatten()
-    x = r*np.cos(theta)
-    y = r*np.sin(theta)
+
+    if angle_axis:
+        points = np.column_stack([r,theta,phi])
+    else:
+        x = r*np.cos(theta)
+        y = r*np.sin(theta)
+        points = np.column_stack([x,y,phi])
+
     sys.path.append('/home/gary/magnetovis/pkg/magnetovis/')
     from vtk_export import vtk_export
-    vtk_export(pkl + '.vtk', np.column_stack([r,theta,phi]),
+
+    vtk_export(pkl + '.vtk', points,
                     dataset = 'STRUCTURED_GRID',
                     connectivity = (N,N,1),
                     point_data = phi,
@@ -522,10 +533,11 @@ def test():
 
 
 def main():
-    test()
+    #test()
     #colorplot(1., 20., 2., 3., 2., 4., N=101, sig=9.)
     #plot3d(1., 20., 2., 3., 2., 4., N=101, sig=9.)
     #export_pkl(1., 20., 2., 3., 2., 4., N=1001, sig=9.)
+    export_vtk(1., 20., 2., 3., 2., 4., N=1001, sig=9.)
     #pkl_to_vtk(base + 'CT_lap.pkl')
     #print('main')
     #M = ssp.csr_matrix([[0,1.5,0],[0,0,1.5],[0,0,0]])
